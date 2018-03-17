@@ -1,11 +1,12 @@
-var jsdom = require('jsdom').jsdom;
+var jsdom = require('jsdom');
+const { JSDOM } = jsdom;
 var atob = require('atob');
 var url = require('url');
 var fs = require('fs');
 
 var exposedProperties = ['window', 'navigator', 'document'];
 
-global.document = jsdom(`<!doctype html><html><body></body></html>`)
+const { document } = (new JSDOM(`<!doctype html><html><body></body></html>`)).window
 global.window = document.defaultView;
 global.window.atob = atob;
 global.window.URL = url;
