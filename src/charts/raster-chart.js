@@ -66,6 +66,10 @@ export default function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
   const _xScaleName = "x"
   const _yScaleName = "y"
 
+  let _xLatLngBnds = null
+  let _yLatLngBnds = null
+  const _useProjection = false
+
   let _usePixelRatio = false
   let _pixelRatio = 1
 
@@ -101,6 +105,22 @@ export default function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
     }
     _y = _
     return _chart
+  }
+
+  _chart.xLatLngBnds = function(_) {
+    if (!arguments.length) {
+      return _xLatLngBnds
+    }
+    _xLatLngBnds = _
+    return chart
+  }
+
+  _chart.yLatLngBnds = function(_) {
+    if (!arguments.length) {
+      return _yLatLngBnds
+    }
+    _yLatLngBnds = _
+    return chart
   }
 
   _chart._resetRenderBounds = function() {
@@ -195,6 +215,11 @@ export default function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
       return _con
     }
     _con = _
+    return _chart
+  }
+
+  _chart.useProjection = function(vegaProjectionEnabled) {
+    _chart._useProjection = vegaProjectionEnabled
     return _chart
   }
 
@@ -322,6 +347,17 @@ export default function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
 
     if (_y === null) {
       _y = d3.scale.linear()
+    }
+
+    // if _chart.useLonLat() is not true, the chart bounds have already been projected into mercator space
+    // TODO(adb): could probably collape this into line 353
+    if (
+      _chart._useProjection &&
+      typeof _chart.useLonLat === "function" &&
+      _chart.useLonLat()
+    ) {
+      _xLatLngBnds = [renderBounds[0][0], renderBounds[1][0]]
+      _yLatLngBnds = [renderBounds[2][1], renderBounds[0][1]]
     }
 
     if (useRenderBounds) {
@@ -634,6 +670,19 @@ function genLayeredVega(chart) {
       range: "height"
     }
   ]
+
+  // MOTE: When a projection is applied, the scales are not being used. However, we still need the legacy scaling terms to properly size poly popups on hover, which is why _xLatLngBnds, etc are separate scales
+  const projections = []
+  if (chart._useProjection) {
+    projections.push({
+      name: "mercator_map_projection",
+      type: "mercator",
+      bounds: {
+        x: chart.xLatLngBnds(),
+        y: chart.yLatLngBnds()
+      }
+    })
+  }
   const marks = []
 
   chart.getLayerNames().forEach(layerName => {
@@ -649,6 +698,7 @@ function genLayeredVega(chart) {
     height: Math.round(height),
     data,
     scales,
+    projections,
     marks
   }
 

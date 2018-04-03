@@ -11931,12 +11931,10 @@ function parseSource(transforms) {
 
 "use strict";
 /**
- * Copyright 2013-2015, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) 2013-present, Facebook, Inc.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 
@@ -26051,21 +26049,20 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
 
 function _toConsumableArray(arr) { if (Array.isArray(arr)) { for (var i = 0, arr2 = Array(arr.length); i < arr.length; i++) { arr2[i] = arr[i]; } return arr2; } else { return Array.from(arr); } }
 
+// NOTE: Reqd until ST_Transform supported on projection columns
+function conv4326To900913(x, y) {
+  var transCoord = [0.0, 0.0];
+  transCoord[0] = x * 111319.49077777777778;
+  transCoord[1] = Math.log(Math.tan((90.0 + y) * 0.00872664625997)) * 6378136.99911215736947;
+  return transCoord;
+}
+
 var vegaLineJoinOptions = ["miter", "round", "bevel"];
 var polyTableGeomColumns = {
   // NOTE: the verts are interleaved x,y, so verts[0] = vert0.x, verts[1] = vert0.y, verts[2] = vert1.x, verts[3] = vert1.y, etc.
   verts: "mapd_geo_coords",
-  indices: "mapd_geo_indices",
-
-  // NOTE: the line draw info references the line loops in the verts. This struct looks like the following:
-  // {
-  //     count,         // number of verts in loop -- might include 3 duplicate verts at end for closure
-  //     instanceCount, // should always be 1
-  //     firstIndex,    // the index in verts (includes x & y) where the verts for the loop start
-  //     baseInstance   // irrelevant for our purposes -- should always be 0
-  // }
-  linedrawinfo: "mapd_geo_linedrawinfo",
-  polydrawinfo: "mapd_geo_polydrawinfo"
+  ring_sizes: "mapd_geo_ring_sizes",
+  poly_rings: "mapd_geo_poly_rings"
 };
 
 function validateLineJoin(newLineJoin, currLineJoin) {
@@ -26191,60 +26188,75 @@ function rasterLayerPolyMixin(_layer) {
         globalFilter = _ref2.globalFilter,
         layerFilter = _ref2.layerFilter,
         filtersInverse = _ref2.filtersInverse,
-        layerName = _ref2.layerName;
+        layerName = _ref2.layerName,
+        useProjection = _ref2.useProjection;
 
     var colorRange = state.encoding.color.range.map(function (c) {
       return (0, _utilsVega.adjustOpacity)(c, state.encoding.color.opacity);
     });
-    return {
-      data: {
-        name: layerName,
-        format: "polys",
-        sql: _utils.parser.writeSQL({
-          type: "root",
-          source: [].concat(_toConsumableArray(new Set(state.data.map(function (source, index) {
-            return source.table;
-          })))).join(", "),
-          transform: getTransforms({
-            filter: filter,
-            globalFilter: globalFilter,
-            layerFilter: layerFilter,
-            filtersInverse: filtersInverse
-          })
+
+    var data = {
+      name: layerName,
+      format: "polys",
+      sql: _utils.parser.writeSQL({
+        type: "root",
+        source: [].concat(_toConsumableArray(new Set(state.data.map(function (source, index) {
+          return source.table;
+        })))).join(", "),
+        transform: getTransforms({
+          filter: filter,
+          globalFilter: globalFilter,
+          layerFilter: layerFilter,
+          filtersInverse: filtersInverse
         })
+      })
+    };
+
+    var scales = [{
+      name: layerName + "_fillColor",
+      type: "quantize",
+      domain: state.encoding.color.domain,
+      range: colorRange,
+      nullValue: "#D6D7D6",
+      default: "#D6D7D6"
+    }];
+
+    var mark = {
+      type: "polys",
+      from: {
+        data: layerName
       },
-      scales: [{
-        name: layerName + "_fillColor",
-        type: "quantize",
-        domain: state.encoding.color.domain,
-        range: colorRange,
-        nullValue: "#D6D7D6",
-        default: "#D6D7D6"
-      }],
-      mark: {
-        type: "polys",
-        from: {
-          data: layerName
+      properties: {
+        x: {
+          field: "x"
         },
-        properties: {
-          x: {
-            scale: "x",
-            field: "x"
-          },
-          y: {
-            scale: "y",
-            field: "y"
-          },
-          fillColor: {
-            scale: layerName + "_fillColor",
-            field: "color"
-          },
-          strokeColor: _typeof(state.mark) === "object" ? state.mark.strokeColor : "white",
-          strokeWidth: _typeof(state.mark) === "object" ? state.mark.strokeWidth : 0.5,
-          lineJoin: _typeof(state.mark) === "object" ? state.mark.lineJoin : "miter",
-          miterLimit: _typeof(state.mark) === "object" ? state.mark.miterLimit : 10
-        }
+        y: {
+          field: "y"
+        },
+        fillColor: {
+          scale: layerName + "_fillColor",
+          field: "color"
+        },
+        strokeColor: _typeof(state.mark) === "object" ? state.mark.strokeColor : "white",
+        strokeWidth: _typeof(state.mark) === "object" ? state.mark.strokeWidth : 0.5,
+        lineJoin: _typeof(state.mark) === "object" ? state.mark.lineJoin : "miter",
+        miterLimit: _typeof(state.mark) === "object" ? state.mark.miterLimit : 10
       }
+    };
+
+    if (useProjection) {
+      mark.transform = {
+        projection: "mercator_map_projection"
+      };
+    } else {
+      mark.properties.x.scale = "x";
+      mark.properties.y.scale = "y";
+    }
+
+    return {
+      data: data,
+      scales: scales,
+      mark: mark
     };
   };
 
@@ -26259,7 +26271,8 @@ function rasterLayerPolyMixin(_layer) {
       filter: _layer.crossfilter().getFilterString(_layer.dimension().getDimensionIndex()),
       globalFilter: _layer.crossfilter().getGlobalFilterString(),
       layerFilter: _layer.filters(),
-      filtersInverse: _layer.filtersInverse()
+      filtersInverse: _layer.filtersInverse(),
+      useProjection: chart._useProjection
     });
     return _vega;
   };
@@ -26267,10 +26280,10 @@ function rasterLayerPolyMixin(_layer) {
   var renderAttributes = ["x", "y", "fillColor", "strokeColor", "strokeWidth", "lineJoin", "miterLimit"];
 
   _layer._addRenderAttrsToPopupColumnSet = function (chart, popupColsSet) {
-    popupColsSet.add(polyTableGeomColumns.verts); // add the poly geometry to the query
-    popupColsSet.add(polyTableGeomColumns.linedrawinfo); // need to get the linedrawinfo beause there can be
-    // multiple polys per row, and linedrawinfo will
-    // tell us this
+    // add the poly geometry to the query
+    popupColsSet.add(polyTableGeomColumns.verts);
+    popupColsSet.add(polyTableGeomColumns.ring_sizes);
+    popupColsSet.add(polyTableGeomColumns.poly_rings);
 
     if (_vega && _vega.mark && _vega.mark.properties) {
       renderAttributes.forEach(function (rndrProp) {
@@ -26282,7 +26295,7 @@ function rasterLayerPolyMixin(_layer) {
   };
 
   _layer._areResultsValidForPopup = function (results) {
-    if (results[polyTableGeomColumns.verts] && results[polyTableGeomColumns.linedrawinfo]) {
+    if (results[polyTableGeomColumns.verts] && results[polyTableGeomColumns.ring_sizes]) {
       return true;
     }
     return false;
@@ -26322,13 +26335,19 @@ function rasterLayerPolyMixin(_layer) {
   };
 
   _layer._displayPopup = function (chart, parentElem, data, width, height, margins, xscale, yscale, minPopupArea, animate) {
-    // verts and drawinfo should be valid as the _resultsAreValidForPopup()
+    // verts and ring_sizes should be valid as the _resultsAreValidForPopup()
     // method should've been called beforehand
     var verts = data[polyTableGeomColumns.verts];
-    var drawinfo = data[polyTableGeomColumns.linedrawinfo];
+    var ring_sizes = data[polyTableGeomColumns.ring_sizes];
+    var poly_rings = data[polyTableGeomColumns.poly_rings];
+
+    // It is possible that the poly rings column is not populated. If not populated, we have a single polygon with number of rings equal to the number of entries in the ring sizes column
+    if (poly_rings === null) {
+      poly_rings = [ring_sizes.length];
+    }
 
     var polys = [];
-
+    var is_multi_ring_poly = [];
     // TODO(croot): when the bounds is added as a column to the poly db table, we
     // can just use those bounds rather than build our own
     // But until then, we need to build our own bounds -- we use this to
@@ -26337,61 +26356,71 @@ function rasterLayerPolyMixin(_layer) {
 
     // bounds: [minX, maxX, minY, maxY]
     var bounds = [Infinity, -Infinity, Infinity, -Infinity];
-    var startIdxDiff = drawinfo.length ? drawinfo[2] : 0;
+    var startIdxDiff = 0; // drawinfo.length ? drawinfo[2] : 0
 
     var FLT_MAX = 1e37;
 
-    for (var i = 0; i < drawinfo.length; i = i + 4) {
-      // Draw info struct:
-      //     0: count,         // number of verts in loop -- might include 3 duplicate verts at end for closure
-      //     1: instanceCount, // should always be 1
-      //     2: firstIndex,    // the start index (includes x & y) where the verts for the loop start
-      //     3: baseInstance   // irrelevant for our purposes -- should always be 0
+    function processPoly(verts) {
       var polypts = [];
-      var count = (drawinfo[i] - 3) * 2; // include x&y, and drop 3 duplicated pts at the end
-      var startIdx = (drawinfo[i + 2] - startIdxDiff) * 2; // include x&y
-      var endIdx = startIdx + count; // remove the 3 duplicate pts at the end
-      for (var idx = startIdx; idx < endIdx; idx = idx + 2) {
-        if (verts[idx] <= -FLT_MAX) {
-          // -FLT_MAX is a separator for multi-polygons (like Hawaii,
-          // where there would be a polygon per island), so when we hit a separator,
-          // remove the 3 duplicate points that would end the polygon prior to the separator
-          // and start a new polygon
-          polypts.pop();
-          polypts.pop();
-          polypts.pop();
-          polys.push(polypts);
-          polypts = [];
-        } else {
-          var screenX = xscale(verts[idx]) + margins.left;
-          var screenY = height - yscale(verts[idx + 1]) - 1 + margins.top;
+      for (var idx = 0; idx < verts.length; idx += 2) {
+        var projectedCoord = conv4326To900913(verts[idx], verts[idx + 1]);
 
-          if (screenX >= 0 && screenX <= width && screenY >= 0 && screenY <= height) {
-            if (bounds[0] === Infinity) {
+        var screenX = xscale(projectedCoord[0]) + margins.left;
+        var screenY = height - yscale(projectedCoord[1]) - 1 + margins.top;
+
+        if (screenX >= 0 && screenX <= width && screenY >= 0 && screenY <= height) {
+          if (bounds[0] === Infinity) {
+            bounds[0] = screenX;
+            bounds[1] = screenX;
+            bounds[2] = screenY;
+            bounds[3] = screenY;
+          } else {
+            if (screenX < bounds[0]) {
               bounds[0] = screenX;
+            } else if (screenX > bounds[1]) {
               bounds[1] = screenX;
-              bounds[2] = screenY;
-              bounds[3] = screenY;
-            } else {
-              if (screenX < bounds[0]) {
-                bounds[0] = screenX;
-              } else if (screenX > bounds[1]) {
-                bounds[1] = screenX;
-              }
+            }
 
-              if (screenY < bounds[2]) {
-                bounds[2] = screenY;
-              } else if (screenY > bounds[3]) {
-                bounds[3] = screenY;
-              }
+            if (screenY < bounds[2]) {
+              bounds[2] = screenY;
+            } else if (screenY > bounds[3]) {
+              bounds[3] = screenY;
             }
           }
-          polypts.push(screenX);
-          polypts.push(screenY);
+        }
+        polypts.push(screenX);
+        polypts.push(screenY);
+      }
+      return polypts;
+    }
+
+    // process each ring
+    var ring_start = 0;
+    var poly_count = 0;
+    var poly_ring_idx = 0;
+    for (var ring = 0; ring < ring_sizes.length; ring++) {
+      var ring_slice = verts.slice(ring_start * 2, (ring_start + ring_sizes[ring]) * 2);
+
+      var polypts = processPoly(ring_slice);
+
+      if (poly_rings[poly_count] === 1) {
+        polys.push(polypts);
+        poly_count++;
+        is_multi_ring_poly[poly_count] = false;
+      } else {
+        is_multi_ring_poly[poly_count] = true;
+        if (poly_ring_idx === 0) {
+          polys.push([polypts]);
+        } else {
+          polys[poly_count].push(polypts);
+        }
+        if (++poly_ring_idx === polys[poly_count]) {
+          poly_count++;
+          poly_ring_idx = 0;
         }
       }
 
-      polys.push(polypts);
+      ring_start += ring_sizes[ring];
     }
 
     if (bounds[0] === Infinity) {
@@ -26420,7 +26449,7 @@ function rasterLayerPolyMixin(_layer) {
     }
 
     var rndrProps = {};
-    var queryRndrProps = new Set([polyTableGeomColumns.verts, polyTableGeomColumns.linedrawinfo]);
+    var queryRndrProps = new Set([polyTableGeomColumns.verts, polyTableGeomColumns.ring_sizes]);
     if (_vega && _vega.mark && _vega.mark.properties) {
       var propObj = _vega.mark.properties;
       renderAttributes.forEach(function (prop) {
@@ -26454,7 +26483,7 @@ function rasterLayerPolyMixin(_layer) {
 
     var xform = svg.append("g").attr("class", "map-poly-xform").attr("transform", "translate(" + (scale * bounds[0] - (scale - 1) * (bounds[0] + boundsWidth / 2)) + ", " + (scale * (bounds[2] + 1) - (scale - 1) * (bounds[2] + 1 + boundsHeight / 2)) + ")");
 
-    var group = xform.append("g").attr("class", "map-poly").attr("transform-origin", boundsWidth / 2, boundsHeight / 2).style("fill", fillColor).style("stroke", strokeColor);
+    var group = xform.append("g").attr("class", "map-poly").attr("transform-origin", boundsWidth / 2, boundsHeight / 2);
 
     if (typeof strokeWidth === "number") {
       group.style("stroke-width", strokeWidth);
@@ -26468,18 +26497,36 @@ function rasterLayerPolyMixin(_layer) {
       }
     }
 
-    polys.forEach(function (pts) {
+    function ptsToSvgPath(pts) {
+      var pointStr = "";
+      for (var i = 0; i < pts.length; i = i + 2) {
+        pointStr = pointStr + (scale * (pts[i] - bounds[0]) + " " + scale * (pts[i + 1] - bounds[2]) + ", ");
+      }
+      return pointStr;
+    }
+
+    polys.forEach(function (pts, idx) {
       if (!pts) {
         return;
       }
 
-      var pointStr = "";
-      for (var _i = 0; _i < pts.length; _i = _i + 2) {
-        pointStr = pointStr + (scale * (pts[_i] - bounds[0]) + " " + scale * (pts[_i + 1] - bounds[2]) + ", ");
+      ptsToSvgPath(pts);
+
+      var pointStr = "M ";
+      if (is_multi_ring_poly[idx]) {
+        // poly with multiple rings
+        pts.forEach(function (ring) {
+          pointStr += ptsToSvgPath(ring);
+          pointStr += " z M ";
+        });
+        pointStr = pointStr.slice(0, pointStr.length - 3);
+      } else {
+        pointStr += ptsToSvgPath(pts);
       }
       pointStr = pointStr.slice(0, pointStr.length - 2).replace(/NaN/g, "");
+      pointStr += "z";
 
-      group.append("polygon").attr("points", pointStr).attr("class", "map-polygon-shape").on("click", function () {
+      group.append("path").attr("d", pointStr).attr("class", "map-polygon-shape").attr("fill", fillColor).attr("fill-rule", "evenodd").attr("stroke", strokeColor).on("click", function () {
         return _layer.onClick(chart, data, _d2.default.event);
       });
     });
@@ -44808,6 +44855,10 @@ function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
   var _xScaleName = "x";
   var _yScaleName = "y";
 
+  var _xLatLngBnds = null;
+  var _yLatLngBnds = null;
+  var _useProjection = false;
+
   var _usePixelRatio = false;
   var _pixelRatio = 1;
 
@@ -44843,6 +44894,22 @@ function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
     }
     _y = _;
     return _chart;
+  };
+
+  _chart.xLatLngBnds = function (_) {
+    if (!arguments.length) {
+      return _xLatLngBnds;
+    }
+    _xLatLngBnds = _;
+    return chart;
+  };
+
+  _chart.yLatLngBnds = function (_) {
+    if (!arguments.length) {
+      return _yLatLngBnds;
+    }
+    _yLatLngBnds = _;
+    return chart;
   };
 
   _chart._resetRenderBounds = function () {
@@ -44942,6 +45009,11 @@ function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
     return _chart;
   };
 
+  _chart.useProjection = function (vegaProjectionEnabled) {
+    _chart._useProjection = vegaProjectionEnabled;
+    return _chart;
+  };
+
   // TODO(croot): pixel ratio should probably be configured on the backend
   // rather than here to deal with scenarios where data is used directly
   // in pixel-space.
@@ -45038,6 +45110,13 @@ function rasterChart(parent, useMap, chartGroup, _mapboxgl) {
 
     if (_y === null) {
       _y = d3.scale.linear();
+    }
+
+    // if _chart.useLonLat() is not true, the chart bounds have already been projected into mercator space
+    // TODO(adb): could probably collape this into line 353
+    if (_chart._useProjection && typeof _chart.useLonLat === "function" && _chart.useLonLat()) {
+      _xLatLngBnds = [renderBounds[0][0], renderBounds[1][0]];
+      _yLatLngBnds = [renderBounds[2][1], renderBounds[0][1]];
     }
 
     if (useRenderBounds) {
@@ -45283,6 +45362,19 @@ function genLayeredVega(chart) {
     domain: chart.y().domain(),
     range: "height"
   }];
+
+  // MOTE: When a projection is applied, the scales are not being used. However, we still need the legacy scaling terms to properly size poly popups on hover, which is why _xLatLngBnds, etc are separate scales
+  var projections = [];
+  if (chart._useProjection) {
+    projections.push({
+      name: "mercator_map_projection",
+      type: "mercator",
+      bounds: {
+        x: chart.xLatLngBnds(),
+        y: chart.yLatLngBnds()
+      }
+    });
+  }
   var marks = [];
 
   chart.getLayerNames().forEach(function (layerName) {
@@ -45298,6 +45390,7 @@ function genLayeredVega(chart) {
     height: Math.round(height),
     data: data,
     scales: scales,
+    projections: projections,
     marks: marks
   };
 
@@ -48278,10 +48371,7 @@ function rowChart(parent, chartGroup) {
     updateElements(rows);
 
     if (_chart.autoScroll()) {
-      var svgWrapperNode = _chart.root().select(".svg-wrapper").node();
-      if (svgWrapperNode) {
-        svgWrapperNode.scrollTop = _scrollTop;
-      }
+      _chart.root().select(".svg-wrapper").node().scrollTop = _scrollTop;
     }
   }
 
@@ -52403,7 +52493,7 @@ module.exports={"version":"0.28.0"}
       }
     };
     // The innerHTML DOM property for SVGElement.
-    Object.defineProperty(SVGElement.prototype, "innerHTML", {
+    Object.defineProperty(window.SVGElement.prototype, "innerHTML", {
       get: function get() {
         var output = [];
         var childNode = this.firstChild;
@@ -52442,7 +52532,7 @@ module.exports={"version":"0.28.0"}
     });
 
     // The innerSVG DOM property for SVGElement.
-    Object.defineProperty(SVGElement.prototype, "innerSVG", {
+    Object.defineProperty(window.SVGElement.prototype, "innerSVG", {
       get: function get() {
         return this.innerHTML;
       },
